@@ -176,9 +176,10 @@ public:
     /** Called from transport's serial jobmanager */
     void onIceStateChanged(ice::IceSession* session, ice::IceSession::State state) override;
     void onIceCompleted(ice::IceSession* session) override;
-    void onIcePreliminary(ice::IceSession* session,
+    void onIceNominated(ice::IceSession* session,
         ice::IceEndpoint* endpoint,
-        const SocketAddress& sourcePort) override;
+        const SocketAddress& sourcePort,
+        uint64_t rtt) override;
 
 public: // end point callbacks
     void onUnregistered(Endpoint& endpoint) override;

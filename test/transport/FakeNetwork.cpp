@@ -108,6 +108,11 @@ void Firewall::process(const uint64_t timestamp)
         {
             if (mapping.first == packet.source)
             {
+                logger::info("outbound %s > %s -> %s",
+                    "firewall",
+                    packet.source.toString().c_str(),
+                    mapping.second.toString().c_str(),
+                    packet.target.toString().c_str());
                 sendToPublic(mapping.second, packet.target, packet.data, packet.length, timestamp);
                 return;
             }
@@ -115,6 +120,11 @@ void Firewall::process(const uint64_t timestamp)
 
         while (!addPortMapping(packet.source, _portCount++)) {}
 
+        logger::info("outbound %s > %s -> %s",
+            "firewall",
+            packet.source.toString().c_str(),
+            _portMappings.back().second.toString().c_str(),
+            packet.target.toString().c_str());
         sendToPublic(_portMappings.back().second, packet.target, packet.data, packet.length, timestamp);
     }
 }

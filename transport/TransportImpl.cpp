@@ -1982,24 +1982,23 @@ void TransportImpl::setSctp(const uint16_t localPort, const uint16_t remotePort)
     }
 }
 
-void TransportImpl::onIcePreliminary(ice::IceSession* session,
+void TransportImpl::onIceNominated(ice::IceSession* session,
     ice::IceEndpoint* endpoint,
-    const SocketAddress& sourcePort)
+    const SocketAddress& remotePort,
+    uint64_t rtt)
 {
-    if (_selectedRtp == nullptr &&
-        (session->getState() == ice::IceSession::State::READY ||
-            session->getState() == ice::IceSession::State::CONNECTING))
+    logger::info("Pair nominated: %s - %s  rtt:%" PRIu64 "us",
+        _loggableId.c_str(),
+        endpoint->getLocalPort().toString().c_str(),
+        remotePort.toString().c_str(),
+        rtt / utils::Time::us);
+
+    _selectedRtp = static_cast<transport::Endpoint*>(endpoint); // current selection
+    _peerRtpPort = remotePort;
+
+    if (_srtpClient->getState() == SrtpClient::State::READY)
     {
-        logger::debug("switching to %s - %s",
-            _loggableId.c_str(),
-            endpoint->getLocalPort().toString().c_str(),
-            sourcePort.toString().c_str());
-        _selectedRtp = static_cast<transport::Endpoint*>(endpoint); // temporary selection
-        _peerRtpPort = sourcePort;
-        if (_srtpClient->getState() == SrtpClient::State::READY)
-        {
-            DtlsTimerJob::start(_jobQueue, *this, *_srtpClient, 1);
-        }
+        DtlsTimerJob::start(_jobQueue, *this, *_srtpClient, 1);
     }
 }
 
@@ -2021,12 +2020,6 @@ void TransportImpl::onIceStateChanged(ice::IceSession* session, const ice::IceSe
         const auto candidatePair = _rtpIceSession->getSelectedPair();
         const auto rtt = _rtpIceSession->getSelectedPairRtt();
         _rttNtp = utils::Time::absToNtp32(rtt);
-
-        logger::info("Pair selected: %s - %s  rtt:%" PRIu64 "us",
-            _loggableId.c_str(),
-            candidatePair.first.address.toString().c_str(),
-            candidatePair.second.address.toString().c_str(),
-            rtt / utils::Time::us);
 
         for (auto& endpoint : _rtpEndpoints)
         {

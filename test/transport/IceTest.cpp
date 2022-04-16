@@ -531,6 +531,8 @@ public:
         uint64_t timestamp) override;
     void cancelStunTransaction(__uint128_t transactionId) override {}
 
+    void block() { _blocked = true; }
+
     transport::SocketAddress getLocalPort() const override { return _address; }
     bool hasIp(const transport::SocketAddress& target) override { return target == _address; }
 
@@ -552,13 +554,15 @@ public:
 private:
     fakenet::Gateway* _gateway;
     ice::TransportType _transportType;
+    bool _blocked;
 };
 
 FakeEndpoint::FakeEndpoint(const transport::SocketAddress& port)
     : _address(port),
       _session(nullptr),
       _gateway(nullptr),
-      _transportType(ice::TransportType::UDP)
+      _transportType(ice::TransportType::UDP),
+      _blocked(false)
 {
     assert(!port.empty());
 }
@@ -569,7 +573,8 @@ FakeEndpoint::FakeEndpoint(const transport::SocketAddress& port,
     : _address(port),
       _session(nullptr),
       _gateway(&gateway),
-      _transportType(transportType)
+      _transportType(transportType),
+      _blocked(false)
 {
     assert(!port.empty());
     gateway.addLocal(this);
@@ -581,6 +586,11 @@ void FakeEndpoint::sendTo(const transport::SocketAddress& source,
     size_t length,
     const uint64_t timestamp)
 {
+    if (_blocked)
+    {
+        return;
+    }
+
     if (source.getFamily() != target.getFamily())
     {
         ++addressIncompatibilityCount;
@@ -610,7 +620,7 @@ void FakeEndpoint::sendStunTo(const transport::SocketAddress& target,
     const uint64_t timestamp)
 {
     sendTo(_address, target, data, len, timestamp);
-};
+}
 
 class FakeStunServer : public fakenet::NetworkNode
 {
@@ -766,6 +776,7 @@ bool establishIce(fakenet::NetworkNode& internet, IceSessions& sessions, uint64_
     bool running = true;
     for (running = true; running;)
     {
+        logger::debug("ice loop %" PRIu64 "ms", "establishIce", ((timeSource % utils::Time::minute) / utils::Time::ms));
         internet.process(timeSource);
         int64_t timeout = std::numeric_limits<int64_t>::max();
         running = false;
@@ -793,6 +804,36 @@ bool establishIce(fakenet::NetworkNode& internet, IceSessions& sessions, uint64_
     }
 
     return !running;
+}
+
+bool sustainIce(fakenet::NetworkNode& internet, IceSessions& sessions, uint64_t& timeSource, uint64_t runTime)
+{
+    const auto start = timeSource;
+
+    for (;;)
+    {
+        logger::debug("ice loop %" PRIu64 "ms", "sustainIce", ((timeSource % utils::Time::minute) / utils::Time::ms));
+        internet.process(timeSource);
+        int64_t timeout = std::numeric_limits<int64_t>::max();
+
+        for (auto& session : sessions)
+        {
+            auto sessionTimeout = session->processTimeout(timeSource);
+            internet.process(timeSource);
+            if (sessionTimeout >= 0)
+            {
+                timeout = std::min(timeout, sessionTimeout);
+            }
+        }
+        if (timeout > 0)
+        {
+            if (utils::Time::diffGE(start, timeSource + timeout + 2, runTime))
+            {
+                return false;
+            }
+            timeSource += timeout + 2;
+        }
+    }
 }
 
 TEST(IceTest, iceprobes)
@@ -1438,7 +1479,7 @@ TEST(IceRobustness, roleConflict)
     std::vector<transport::SocketAddress> stunServers;
     stunServers.push_back(stunServer.getIp());
 
-    uint64_t timeSource = utils::Time::getAbsoluteTime();
+    uint64_t timeSource = utils::Time::sec;
     gatherCandidates(internet, stunServers, sessions, timeSource);
     // provide one side with candidates and credentials
     logger::info("GATHER PHASE COMPLETE", "");
@@ -1461,6 +1502,55 @@ TEST(IceRobustness, roleConflict)
     {
         EXPECT_EQ(sessions[1]->getRole(), ice::IceRole::CONTROLLING);
     }
+}
+
+TEST(IceRobustness, failOver)
+{
+    fakenet::Internet internet;
+
+    fakenet::Firewall firewall1(transport::SocketAddress::parse("216.93.246.10", 0), internet);
+
+    FakeEndpoint mbrEp(transport::SocketAddress::parse("35.102.48.207", 10000), internet);
+
+    FakeEndpoint ethernetEp(transport::SocketAddress::parse("172.16.0.10", 2000), firewall1);
+    FakeEndpoint wifiEp(transport::SocketAddress::parse("172.16.0.20", 3000), firewall1);
+
+    ice::IceConfig config;
+    IceSessions sessions;
+    sessions.emplace_back(
+        std::make_unique<ice::IceSession>(1, config, ice::IceComponent::RTP, ice::IceRole::CONTROLLING, nullptr));
+    sessions.emplace_back(
+        std::make_unique<ice::IceSession>(2, config, ice::IceComponent::RTP, ice::IceRole::CONTROLLED, nullptr));
+
+    mbrEp.attach(sessions[0]);
+
+    ethernetEp.attach(sessions[1]); // highest prio
+    wifiEp.attach(sessions[1]);
+
+    uint64_t timeSource = utils::Time::sec;
+    exchangeInfo(*sessions[0], *sessions[1]);
+    startProbes(sessions, timeSource);
+    establishIce(internet, sessions, timeSource, utils::Time::sec * 30);
+
+    ASSERT_EQ(sessions[0]->getState(), ice::IceSession::State::CONNECTED);
+    ASSERT_EQ(sessions[1]->getState(), ice::IceSession::State::CONNECTED);
+    auto selectedPair0 = sessions[1]->getSelectedPair();
+    EXPECT_TRUE(selectedPair0.first.baseAddress.equalsIp(ethernetEp.getLocalPort()));
+    auto firewallPortEth = selectedPair0.first.address.getPort();
+
+    logger::info("blocking ethernet", "Ice failOver");
+    ethernetEp.block();
+
+    sustainIce(internet, sessions, timeSource, utils::Time::sec * 10);
+    auto selectedClientPair = sessions[1]->getSelectedPair();
+    EXPECT_TRUE(selectedClientPair.first.baseAddress.equalsIp(wifiEp.getLocalPort()));
+    auto selectedMbrPair = sessions[0]->getSelectedPair();
+    logger::debug("%s - %s",
+        "",
+        selectedMbrPair.second.baseAddress.toString().c_str(),
+        selectedMbrPair.second.address.toString().c_str());
+    EXPECT_TRUE(selectedMbrPair.second.baseAddress.equalsIp(firewall1.getPublicIp()));
+    EXPECT_NE(selectedMbrPair.second.baseAddress.getPort(), firewallPortEth);
 }
 
 TEST(IceTest, udpTcpTimeout)

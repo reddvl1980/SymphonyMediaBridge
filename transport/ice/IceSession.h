@@ -3,6 +3,7 @@
 #include "Stun.h"
 #include "concurrency/ScopedMutexGuard.h"
 #include "utils/SocketAddress.h"
+#include "utils/Time.h"
 #include <deque>
 namespace ice
 {
@@ -28,6 +29,7 @@ struct IceConfig
     std::string software = "slice"; // keep short please.
     transport::SocketAddress publicIpv4;
     transport::SocketAddress publicIpv6;
+    uint32_t nomineeIdleTimeout = 2000;
 };
 // Abstraction for IceSession to send over a socket
 // STUN transaction id is included which makes it easy for you to
@@ -101,9 +103,12 @@ public:
     public:
         virtual void onIceStateChanged(IceSession* session, State state) = 0;
         virtual void onIceCompleted(IceSession* session) = 0;
-        virtual void onIcePreliminary(IceSession* session,
-            IceEndpoint* endpoint,
-            const transport::SocketAddress& sourcePort) = 0;
+
+        /** Nomination may occur repeatedly as checks proceeds */
+        virtual void onIceNominated(IceSession* session,
+            IceEndpoint* localEndpoint,
+            const transport::SocketAddress& remotePort,
+            uint64_t rtt) = 0;
     };
 
     IceSession(const IceSession&) = delete;
@@ -202,12 +207,17 @@ private:
 
         CandidatePair& operator=(const CandidatePair&) = delete;
 
-        bool hasTimedout(uint64_t now) const { return state == InProgress && (now - nextTransmission > 0); }
+        bool hasTimedout(uint64_t now) const { return state == InProgress && (now - _nextTransmission > 0); }
+        int64_t getIdleTime(uint64_t now) const
+        {
+            return std::min(int64_t(0), utils::Time::diff(_nextTransmission, now));
+        }
         int64_t nextTimeout(uint64_t now) const;
         void processTimeout(uint64_t now);
         bool isRecent(uint64_t now) const;
 
         void restartProbe(const uint64_t now);
+        void scheduleProbe(uint64_t timestamp) { _nextTransmission = timestamp; }
         void send(uint64_t now);
         uint64_t getPriority(IceRole role) const;
         bool isFinished() const { return state == Succeeded || state == Failed; }
@@ -215,10 +225,14 @@ private:
         bool hasTransaction(const StunMessage& response) const;
         StunTransaction* findTransaction(const StunMessage& response);
         void onResponse(uint64_t now, const StunMessage& response);
+        void onRequest(uint64_t now, const StunMessage& request);
         void onDisconnect();
         void nominate(uint64_t now);
         void freeze();
         void failCandidate();
+
+        uint64_t getLastReceiveTime() const { return _lastReceiveTimestamp; }
+        uint64_t getMinRtt() const { return _minRtt; }
 
         uint64_t getRtt() const;
         std::string getLoggableId() const;
@@ -228,12 +242,9 @@ private:
         EndpointInfo localEndpoint;
         const bool gatheringProbe;
         uint64_t startTime;
-        uint64_t nextTransmission;
-        uint64_t transmitInterval;
-        int replies;
+
         bool nominated;
         IceError errorCode;
-        uint64_t minRtt;
 
         enum State
         {
@@ -250,10 +261,15 @@ private:
         void cancelPendingTransactions();
 
         const std::string& _name;
-        std::deque<StunTransaction> _transactions; // TODO replace with inplace circular container
+        std::deque<StunTransaction> _transactions;
         StunTransactionIdGenerator& _idGenerator;
         const IceConfig& _config;
         const SessionCredentials& _credentials;
+        int _replies;
+        uint64_t _nextTransmission;
+        uint64_t _lastReceiveTimestamp;
+        uint64_t _transmitInterval;
+        uint64_t _minRtt;
     };
 
     void generateCredentialString(char* targetBuffer, int length);
@@ -274,8 +290,9 @@ private:
     bool isIceComplete(uint64_t now);
     void stateCheck(uint64_t now);
     void nominate(uint64_t now);
+    void nominate(CandidatePair& pair, uint64_t now);
     void freezePendingProbes();
-    bool hasNomination() const;
+    bool hasNomination(uint64_t now) const;
     uint64_t getMaxStunServerCandidateAge(uint64_t now) const;
 
     void onRequestReceived(IceEndpoint* endpoint,
@@ -286,6 +303,8 @@ private:
         const transport::SocketAddress& sender,
         const StunMessage& msg,
         uint64_t now);
+
+    void preliminaryNomination(IceEndpoint* endpoint, const transport::SocketAddress& remoteAddress);
 
     void reportState(State newState);
 
@@ -307,6 +326,7 @@ private:
     IEvents* const _eventSink;
     SessionCredentials _credentials;
     uint64_t _sessionStart;
+    CandidatePair* _nomination;
 
     DBGCHECK_SINGLETHREADED_MUTEX(_mutexGuard);
 };
