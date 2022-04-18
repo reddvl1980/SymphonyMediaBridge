@@ -1993,8 +1993,11 @@ void TransportImpl::onIceNominated(ice::IceSession* session,
         remotePort.toString().c_str(),
         rtt / utils::Time::us);
 
+    _rttNtp = utils::Time::absToNtp32(rtt);
     _selectedRtp = static_cast<transport::Endpoint*>(endpoint); // current selection
     _peerRtpPort = remotePort;
+    _selectedRtcp = _selectedRtp;
+    _peerRtcpPort = remotePort;
 
     if (_srtpClient->getState() == SrtpClient::State::READY)
     {
@@ -2007,6 +2010,11 @@ void TransportImpl::onIceCompleted(ice::IceSession* session)
     logger::debug("ice completed %s",
         getLoggableId().c_str(),
         session->getState() == ice::IceSession::State::CONNECTED ? "successfully" : "failure");
+
+    if (isConnected())
+    {
+        onTransportConnected();
+    }
 }
 
 void TransportImpl::onIceStateChanged(ice::IceSession* session, const ice::IceSession::State state)
@@ -2017,28 +2025,14 @@ void TransportImpl::onIceStateChanged(ice::IceSession* session, const ice::IceSe
     {
         logger::info("ICE CONNECTED", _loggableId.c_str());
 
-        const auto candidatePair = _rtpIceSession->getSelectedPair();
-        const auto rtt = _rtpIceSession->getSelectedPairRtt();
-        _rttNtp = utils::Time::absToNtp32(rtt);
-
+        auto nominatedPair = session->getSelectedPair();
         for (auto& endpoint : _rtpEndpoints)
         {
-            if (endpoint->getState() == Endpoint::State::CONNECTED &&
-                endpoint->getLocalPort() == candidatePair.first.baseAddress)
-            {
-                _selectedRtp = endpoint;
-                _selectedRtcp = endpoint;
-                _peerRtpPort = candidatePair.second.address;
-                _peerRtcpPort = candidatePair.second.address;
-            }
-            else if (endpoint->getTransportType() == ice::TransportType::TCP)
+            if (endpoint->getLocalPort() != nominatedPair.first.baseAddress &&
+                endpoint->getTransportType() == ice::TransportType::TCP)
             {
                 endpoint->closePort();
             }
-        }
-        if (isConnected())
-        {
-            onTransportConnected();
         }
 
         break;

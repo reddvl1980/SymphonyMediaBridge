@@ -1,4 +1,5 @@
 #include "FakeNetwork.h"
+#include "IceListenerMock.h"
 #include "crypto/SslHelper.h"
 #include "jobmanager/JobManager.h"
 #include "logger/Logger.h"
@@ -23,6 +24,9 @@ void setRemoteCandidates(ice::IceSession& target, ice::IceSession& source)
     }
 }
 } // namespace
+
+using namespace testing;
+
 TEST(IceTest, utf8)
 {
     ice::StunMessage stun;
@@ -1140,6 +1144,16 @@ TEST(IceTest, fixedportmapNogathering)
     auto pair2 = sessions[1]->getSelectedPair();
     EXPECT_TRUE(firewall1.hasIp(pair1.first.address));
 
+    logger::debug("s0 pair %s-%s",
+        "iceTest",
+        pair1.first.address.toString().c_str(),
+        pair1.second.address.toString().c_str());
+
+    logger::debug("s1 pair %s-%s",
+        "iceTest",
+        pair2.first.address.toString().c_str(),
+        pair2.second.address.toString().c_str());
+
     EXPECT_TRUE(pair2.first.address == pair1.second.address);
     EXPECT_TRUE(pair1.first.address == pair2.second.address);
 }
@@ -1506,6 +1520,39 @@ TEST(IceRobustness, roleConflict)
 
 TEST(IceRobustness, failOver)
 {
+    NiceMock<fakenet::IceListenerMock> iceEventsMock1;
+    NiceMock<fakenet::IceListenerMock> iceEventsMock2;
+    ON_CALL(iceEventsMock1, onIceCompleted).WillByDefault([](ice::IceSession* session) {
+        logger::debug("ICE completed ", "ice session1");
+    });
+    ON_CALL(iceEventsMock2, onIceCompleted).WillByDefault([](ice::IceSession* session) {
+        logger::debug("ICE completed ", "ice session2");
+    });
+    EXPECT_CALL(iceEventsMock1, onIceCompleted(_)).Times(1);
+    EXPECT_CALL(iceEventsMock2, onIceCompleted(_)).Times(1);
+
+    ON_CALL(iceEventsMock1, onIceNominated)
+        .WillByDefault([](ice::IceSession* session,
+                           ice::IceEndpoint* localEndpoint,
+                           const transport::SocketAddress& remotePort,
+                           uint64_t rtt) {
+            logger::debug("ICE nominated %s-%s",
+                "icesession1",
+                localEndpoint->getLocalPort().toString().c_str(),
+                remotePort.toString().c_str());
+        });
+
+    ON_CALL(iceEventsMock2, onIceNominated)
+        .WillByDefault([](ice::IceSession* session,
+                           ice::IceEndpoint* localEndpoint,
+                           const transport::SocketAddress& remotePort,
+                           uint64_t rtt) {
+            logger::debug("ICE nominated %s-%s",
+                "icesession2",
+                localEndpoint->getLocalPort().toString().c_str(),
+                remotePort.toString().c_str());
+        });
+
     fakenet::Internet internet;
 
     fakenet::Firewall firewall1(transport::SocketAddress::parse("216.93.246.10", 0), internet);
@@ -1517,10 +1564,16 @@ TEST(IceRobustness, failOver)
 
     ice::IceConfig config;
     IceSessions sessions;
-    sessions.emplace_back(
-        std::make_unique<ice::IceSession>(1, config, ice::IceComponent::RTP, ice::IceRole::CONTROLLING, nullptr));
-    sessions.emplace_back(
-        std::make_unique<ice::IceSession>(2, config, ice::IceComponent::RTP, ice::IceRole::CONTROLLED, nullptr));
+    sessions.emplace_back(std::make_unique<ice::IceSession>(1,
+        config,
+        ice::IceComponent::RTP,
+        ice::IceRole::CONTROLLING,
+        &iceEventsMock1));
+    sessions.emplace_back(std::make_unique<ice::IceSession>(2,
+        config,
+        ice::IceComponent::RTP,
+        ice::IceRole::CONTROLLED,
+        &iceEventsMock2));
 
     mbrEp.attach(sessions[0]);
 
