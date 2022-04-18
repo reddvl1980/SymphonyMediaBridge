@@ -967,7 +967,7 @@ void IceSession::freezePendingProbes()
 
     for (auto& candidatePair : _candidatePairs)
     {
-        if (!candidatePair->nominated && candidatePair->state < CandidatePair::State::Failed)
+        if (!candidatePair->nominated && candidatePair->state < CandidatePair::State::Succeeded)
         {
             candidatePair->state = CandidatePair::State::Frozen;
         }
