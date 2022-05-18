@@ -186,6 +186,11 @@ set(FILES
         codec/OpusEncoder.cpp
         codec/OpusEncoder.h
         codec/Vp8Header.h
+        codec/G711.h
+        codec/G711codec.h
+        codec/G711codec.cpp
+        codec/PcmUtils.h
+        codec/PcmUtils.cpp
         concurrency/EventSemaphore.cpp
         concurrency/EventSemaphore.h
         concurrency/LockFreeList.cpp
@@ -447,6 +452,8 @@ set(TEST_FILES
     test/integration/emulator/AudioSource.h
     test/config/ConfigTest.cpp
     test/codec/AudioProcessingTest.cpp
+    test/codec/G711CodecTest.cpp
+    test/codec/OpusCodecTest.cpp
     test/gtest_main.cpp
     test/CsvWriter.h
     test/CsvWriter.cpp

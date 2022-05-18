@@ -13,6 +13,8 @@ struct RtpMap
 {
     enum class Format : uint16_t
     {
+        PCMU = 0,
+        PCMA = 8,
         VP8 = 100,
         VP8RTX = 96,
         OPUS = 111,

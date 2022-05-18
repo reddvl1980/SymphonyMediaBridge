@@ -1,5 +1,6 @@
 #include "bridge/engine/AudioForwarderRewriteAndSendJob.h"
 #include "bridge/engine/SsrcOutboundContext.h"
+#include "codec/G711.h"
 #include "codec/Opus.h"
 #include "rtp/RtpHeader.h"
 #include "transport/Transport.h"
@@ -22,6 +23,21 @@ AudioForwarderRewriteAndSendJob::AudioForwarderRewriteAndSendJob(SsrcOutboundCon
     assert(_packet->getLength() > 0);
 }
 
+namespace
+{
+uint32_t clockCyclesPerPacket(uint8_t payloadType)
+{
+    if (payloadType == codec::Pcmu::payloadType || payloadType == codec::Pcma::payloadType)
+    {
+        return codec::Pcma::sampleRate / codec::Pcma::packetsPerSecond;
+    }
+    else
+    {
+        return codec::Opus::sampleRate / codec::Opus::packetsPerSecond;
+    }
+}
+} // namespace
+
 void AudioForwarderRewriteAndSendJob::run()
 {
     auto header = rtp::RtpHeader::fromPacket(*_packet);
@@ -29,8 +45,8 @@ void AudioForwarderRewriteAndSendJob::run()
     _outboundContext._lastRewrittenSsrc = header->ssrc;
     if (newSource)
     {
-        _outboundContext._timestampOffset = _outboundContext._lastSentTimestamp +
-            codec::Opus::sampleRate / codec::Opus::packetsPerSecond - header->timestamp.get();
+        _outboundContext._timestampOffset =
+            _outboundContext._lastSentTimestamp + clockCyclesPerPacket(header->payloadType) - header->timestamp.get();
         _outboundContext._highestSeenExtendedSequenceNumber = _extendedSequenceNumber - 1;
     }
 

@@ -1523,6 +1523,8 @@ void EngineMixer::onRtpPacketReceived(transport::RtcTransport* sender,
     switch (ssrcContext->_rtpMap._format)
     {
     case bridge::RtpMap::Format::OPUS:
+    case bridge::RtpMap::Format::PCMA:
+    case bridge::RtpMap::Format::PCMU:
         ssrcContext->onRtpPacket(timestamp);
         if (_engineAudioStreams.size() > 0)
         {

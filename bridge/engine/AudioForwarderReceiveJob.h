@@ -39,6 +39,7 @@ public:
 private:
     void decodeOpus(const memory::Packet& opusPacket);
     void onPacketDecoded(const int32_t decodedFrames, const uint8_t* decodedData);
+    void decodeG711(const memory::Packet& g711Packet);
 
     memory::UniquePacket _packet;
     memory::AudioPacketPoolAllocator& _audioPacketAllocator;
