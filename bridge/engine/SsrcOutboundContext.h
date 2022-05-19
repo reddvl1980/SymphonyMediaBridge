@@ -2,6 +2,7 @@
 
 #include "bridge/RtpMap.h"
 #include "codec/OpusEncoder.h"
+#include "codec/PcmResampler.h"
 #include "memory/PacketPoolAllocator.h"
 #include "utils/Optional.h"
 #include "utils/Time.h"
@@ -55,6 +56,8 @@ public:
     uint32_t _ssrc;
 
     std::unique_ptr<codec::OpusEncoder> _opusEncoder;
+    std::unique_ptr<codec::PcmResampler> _resampler;
+
     memory::PacketPoolAllocator& _allocator;
     const bridge::RtpMap& _rtpMap;
 

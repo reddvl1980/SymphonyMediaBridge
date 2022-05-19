@@ -4,6 +4,7 @@
 #include "bridge/engine/PliScheduler.h"
 #include "bridge/engine/VideoMissingPacketsTracker.h"
 #include "codec/OpusDecoder.h"
+#include "codec/PcmResampler.h"
 #include "jobmanager/JobQueue.h"
 #include "transport/RtpReceiveState.h"
 #include "utils/Optional.h"
@@ -68,6 +69,7 @@ public:
     utils::Optional<uint32_t> _rtxSsrc; // points to main from rtc and to rtx from main
 
     std::unique_ptr<codec::OpusDecoder> _opusDecoder;
+    std::unique_ptr<codec::PcmResampler> _resampler;
 
     bool _markNextPacket;
     uint32_t _rewriteSsrc;

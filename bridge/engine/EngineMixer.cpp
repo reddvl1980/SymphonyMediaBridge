@@ -234,7 +234,7 @@ void EngineMixer::removeAudioStream(EngineAudioStream* engineAudioStream)
         auto* context = obtainOutboundSsrcContext(*engineAudioStream, engineAudioStream->_localSsrc);
         if (context)
         {
-            auto goodByePacket = createGoodBye(context->_ssrc, context->_allocator);
+            auto goodByePacket = createGoodBye(context->_ssrc, _sendAllocator);
             if (goodByePacket)
             {
                 engineAudioStream->_transport.getJobQueue().addJob<SendRtcpJob>(std::move(goodByePacket),
@@ -324,7 +324,7 @@ void EngineMixer::removeVideoStream(EngineVideoStream* engineVideoStream)
             engineVideoStream->_transport.getJobQueue().addJob<SetRtxProbeSourceJob>(engineVideoStream->_transport,
                 engineVideoStream->_localSsrc,
                 nullptr);
-            auto goodByePacket = createGoodBye(outboundContext->_ssrc, outboundContext->_allocator);
+            auto goodByePacket = createGoodBye(outboundContext->_ssrc, _sendAllocator);
             if (goodByePacket)
             {
                 engineVideoStream->_transport.getJobQueue().addJob<SendRtcpJob>(std::move(goodByePacket),
