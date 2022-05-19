@@ -23,6 +23,8 @@ struct RtpMap
 
     static const RtpMap& opus();
     static const RtpMap& vp8();
+    static const RtpMap& pcma();
+    static const RtpMap& pcmu();
 
     RtpMap() : _format(Format::EMPTY), _payloadType(4096), _sampleRate(0) {}
 

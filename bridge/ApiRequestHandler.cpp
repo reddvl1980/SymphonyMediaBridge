@@ -131,6 +131,14 @@ bridge::RtpMap makeRtpMap(const api::EndpointDescription::PayloadType& payloadTy
             payloadType._clockRate,
             payloadType._channels);
     }
+    else if (payloadType._name.compare("pcma") == 0)
+    {
+        rtpMap = bridge::RtpMap::pcma();
+    }
+    else if (payloadType._name.compare("pcmu") == 0)
+    {
+        rtpMap = bridge::RtpMap::pcmu();
+    }
     else if (payloadType._name.compare("VP8") == 0)
     {
         rtpMap = bridge::RtpMap(bridge::RtpMap::Format::VP8, payloadType._id, payloadType._clockRate);
