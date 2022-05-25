@@ -67,9 +67,14 @@ memory::UniquePacket AudioSource::getPacket(uint64_t timestamp)
     rtp::GeneralExtension1Byteheader audioLevel(1, 1);
     audioLevel.data[0] = codec::computeAudioLevel(audio, samplesPerPacket);
     extensionHead.addExtension(cursor, audioLevel);
+
+    rtp::GeneralExtension1Byteheader rtpId(4, 12);
+    std::strncpy(reinterpret_cast<char*>(rtpId.data), "user59991209", 12);
+    extensionHead.addExtension(cursor, rtpId);
+
     rtpHeader->setExtensions(extensionHead);
 
-    assert(rtpHeader->headerLength() == 24);
+    assert(rtpHeader->headerLength() == 36);
     const auto bytesEncoded = _encoder.encode(audio,
         samplesPerPacket,
         static_cast<unsigned char*>(rtpHeader->getPayload()),

@@ -861,6 +861,19 @@ public:
             addOpus(reinterpret_cast<unsigned char*>(rtpHeader->getPayload()),
                 packet.getLength() - rtpHeader->headerLength(),
                 extendedSequenceNumber);
+
+            auto extHeader = rtpHeader->getExtensionHeader();
+            if (extHeader)
+            {
+                for (auto& extension : extHeader->extensions())
+                {
+                    if (extension.getId() == 4 && extension.getDataLength() == 12)
+                    {
+                        return;
+                    }
+                }
+                allPacketsContainedRtpId = false;
+            }
         }
 
         void addOpus(const unsigned char* opusData, int32_t payloadLength, uint32_t extendedSequenceNumber)
@@ -891,6 +904,8 @@ public:
 
         const std::vector<int16_t>& getRecording() const { return _recording; }
         const logger::LoggableId& getLoggableId() const { return _loggableId; }
+
+        bool allPacketsContainedRtpId = true;
 
     private:
         bridge::RtpMap _rtpMap;
@@ -977,6 +992,18 @@ public:
 
     const concurrency::MpmcHashmap32<uint32_t, RtpReceiver*>& getReceiveStats() const { return _receivedData; }
     const logger::LoggableId& getLoggableId() const { return _loggableId; }
+
+    bool existsRtpIdOnAllAudioStreams() const
+    {
+        for (auto& pair : _receivedData)
+        {
+            if (!pair.second->allPacketsContainedRtpId)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
 
 private:
     utils::IdGenerator _idGenerator;
@@ -1405,6 +1432,8 @@ TEST_F(IntegrationTest, plainNewApi)
         std::sort(allFreq.begin(), allFreq.end());
         EXPECT_NEAR(allFreq[0], 1300.0, 25.0);
         EXPECT_NEAR(allFreq[1], 2100.0, 25.0);
+
+        EXPECT_TRUE(client1.existsRtpIdOnAllAudioStreams());
     }
     {
         auto audioCounters = client2._transport->getAudioReceiveCounters(utils::Time::getAbsoluteTime());
