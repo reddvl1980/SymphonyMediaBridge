@@ -443,6 +443,63 @@ private:
     std::string _baseUrl;
 };
 
+class Barbell
+{
+public:
+    Barbell() : _id(newGuuid()) {}
+
+    std::string allocate(std::string baseUrl, std::string conferenceId, bool controlling)
+    {
+        _conferenceId = conferenceId;
+        using namespace nlohmann;
+        json body = {{"action", "allocate"},
+            {"bundle-transport",
+                {
+                    {"ice-controlling", controlling},
+                }}};
+
+        logger::debug("allocate barbell with %s", "", body.dump().c_str());
+        HttpPostRequest request((baseUrl + "/barbell/" + conferenceId + "/" + _id).c_str(), body.dump().c_str());
+        request.awaitResponse(9000 * utils::Time::ms);
+
+        if (request.isSuccess())
+        {
+            _offer = request.getJsonBody();
+        }
+        else
+        {
+            logger::error("failed to allocate barbell %d", "Test", request.getCode());
+        }
+
+        return _offer.dump();
+    }
+
+    void configure(std::string body)
+    {
+        auto requestBody = nlohmann::json::parse(body);
+        requestBody["action"] = "configure";
+        HttpPostRequest request((_baseUrl + "/barbell/" + _conferenceId + "/" + _id).c_str(),
+            requestBody.dump().c_str());
+        request.awaitResponse(9000 * utils::Time::ms);
+
+        if (request.isSuccess())
+        {
+            _offer = request.getJsonBody();
+        }
+        else
+        {
+            logger::error("failed to allocate barbell %d", "Test", request.getCode());
+        }
+    }
+
+    std::string _id;
+
+private:
+    nlohmann::json _offer;
+    std::string _baseUrl;
+    std::string _conferenceId;
+};
+
 nlohmann::json newContent(const std::string& endpointId, const char* type, const char* relayType, bool initiator)
 {
     using namespace nlohmann;
@@ -1729,6 +1786,15 @@ TEST_F(IntegrationTest, simpleBarbell)
 
     client1._audioSource->setVolume(0.6);
     client2._audioSource->setVolume(0.6);
+
+    Barbell bb1;
+    Barbell bb2;
+
+    auto sdp1 = bb1.allocate(baseUrl, conf.getId(), true);
+    auto sdp2 = bb2.allocate(baseUrl2, conf2.getId(), false);
+
+    bb1.configure(sdp2);
+    bb2.configure(sdp1);
 
     groupCall.run(utils::Time::ms * 5000);
 
