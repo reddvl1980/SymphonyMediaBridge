@@ -383,6 +383,47 @@ public:
         }
     }
 
+    void configureTransport(transport::RtcTransport& transport, memory::AudioPacketPoolAllocator& allocator)
+    {
+        auto bundle = _offer["bundle-transport"];
+        ice::IceCandidates candidates;
+
+        for (auto& c : bundle["ice"]["candidates"])
+        {
+            candidates.push_back(ice::IceCandidate(c["foundation"].template get<std::string>().c_str(),
+                ice::IceComponent::RTP,
+                c["protocol"] == "udp" ? ice::TransportType::UDP : ice::TransportType::TCP,
+                c["priority"].template get<uint32_t>(),
+                transport::SocketAddress::parse(c["ip"], c["port"]),
+                ice::IceCandidate::Type::HOST));
+        }
+
+        std::pair<std::string, std::string> credentials;
+        credentials.first = bundle["ice"]["ufrag"];
+        credentials.second = bundle["ice"]["pwd"];
+
+        transport.setRemoteIce(credentials, candidates, allocator);
+
+        std::string fingerPrint = bundle["dtls"]["hash"];
+        transport.setRemoteDtlsFingerprint(bundle["dtls"]["type"], fingerPrint, true);
+    }
+
+    bool isAudioOffered() const { return _offer.find("audio") != _offer.end(); }
+
+    std::unordered_set<uint32_t> getOfferedVideoSsrcs() const
+    {
+        std::unordered_set<uint32_t> ssrcs;
+        if (_offer.find("video") != _offer.end())
+        {
+            for (uint32_t ssrc : _offer["video"]["ssrcs"])
+            {
+                ssrcs.emplace(ssrc);
+            }
+        }
+
+        return ssrcs;
+    }
+
     bool isSuccess() const { return !raw.empty(); }
 
     nlohmann::json getOffer() const { return _offer; }
@@ -627,6 +668,62 @@ public:
         }
     }
 
+    void configureTransport(transport::RtcTransport& transport, memory::AudioPacketPoolAllocator& allocator)
+    {
+        for (auto& bundle : _offer["channel-bundles"])
+        {
+            ice::IceCandidates candidates;
+            for (auto& c : bundle["transport"]["candidates"])
+            {
+                candidates.push_back(ice::IceCandidate(c["foundation"].template get<std::string>().c_str(),
+                    ice::IceComponent::RTP,
+                    c["protocol"] == "udp" ? ice::TransportType::UDP : ice::TransportType::TCP,
+                    c["priority"].template get<uint32_t>(),
+                    transport::SocketAddress::parse(c["ip"], c["port"]),
+                    ice::IceCandidate::Type::HOST));
+            }
+
+            std::pair<std::string, std::string> credentials;
+            credentials.first = bundle["transport"]["ufrag"];
+            credentials.second = bundle["transport"]["pwd"];
+
+            transport.setRemoteIce(credentials, candidates, allocator);
+
+            std::string fingerPrint = bundle["transport"]["fingerprints"][0]["fingerprint"];
+            transport.setRemoteDtlsFingerprint(bundle["transport"]["fingerprints"][0]["hash"], fingerPrint, true);
+        }
+    }
+
+    bool isAudioOffered() const
+    {
+        for (auto& content : _offer["contents"])
+        {
+            if (content["name"] == "audio")
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    std::unordered_set<uint32_t> getOfferedVideoSsrcs() const
+    {
+        std::unordered_set<uint32_t> ssrcs;
+        for (auto& content : _offer["contents"])
+        {
+            if (content["name"] == "video")
+            {
+                auto channel = content["channels"][0];
+                for (uint32_t ssrc : channel["sources"])
+                {
+                    ssrcs.emplace(ssrc);
+                }
+                return ssrcs;
+            }
+        }
+        return ssrcs;
+    }
+
     bool isSuccess() const { return !raw.empty(); }
 
     nlohmann::json getOffer() const { return _offer; }
@@ -685,6 +782,15 @@ public:
 
     ~SfuClient()
     {
+        if (_transport && _transport->isRunning())
+        {
+            _transport->stop();
+        }
+        while (_transport && _transport->hasPendingJobs())
+        {
+            utils::Time::nanoSleep(utils::Time::sec * 1);
+        }
+
         for (auto& item : _receivedData)
         {
             delete item.second;
@@ -701,54 +807,6 @@ public:
         _channel.create(baseUrl, conferenceId, initiator, audio, video, forwardMedia);
     }
 
-    void processLegacyOffer()
-    {
-        auto offer = _channel.getOffer();
-        _transport =
-            _transportFactory.createOnPrivatePort(ice::IceRole::CONTROLLED, 256 * 1024, _channel.getEndpointIdHash());
-        _transport->setDataReceiver(this);
-
-        for (auto& bundle : offer["channel-bundles"])
-        {
-            ice::IceCandidates candidates;
-            for (auto& c : bundle["transport"]["candidates"])
-            {
-                candidates.push_back(ice::IceCandidate(c["foundation"].template get<std::string>().c_str(),
-                    ice::IceComponent::RTP,
-                    c["protocol"] == "udp" ? ice::TransportType::UDP : ice::TransportType::TCP,
-                    c["priority"].template get<uint32_t>(),
-                    transport::SocketAddress::parse(c["ip"], c["port"]),
-                    ice::IceCandidate::Type::HOST));
-            }
-
-            std::pair<std::string, std::string> credentials;
-            credentials.first = bundle["transport"]["ufrag"];
-            credentials.second = bundle["transport"]["pwd"];
-
-            _transport->setRemoteIce(credentials, candidates, _audioAllocator);
-
-            std::string fingerPrint = bundle["transport"]["fingerprints"][0]["fingerprint"];
-            _transport->setRemoteDtlsFingerprint(bundle["transport"]["fingerprints"][0]["hash"], fingerPrint, true);
-        }
-
-        for (auto& content : offer["contents"])
-        {
-            if (content["name"] == "audio")
-            {
-                _audioSource = std::make_unique<emulator::AudioSource>(_allocator, _idGenerator.next(), _ptime);
-                _transport->setAudioPayloadType(111, codec::Opus::sampleRate);
-            }
-            else if (content["name"] == "video")
-            {
-                auto channel = content["channels"][0];
-                for (uint32_t ssrc : channel["sources"])
-                {
-                    _remoteVideoSsrc.emplace(ssrc);
-                }
-            }
-        }
-    }
-
     void processOffer()
     {
         auto offer = _channel.getOffer();
@@ -756,41 +814,15 @@ public:
             _transportFactory.createOnPrivatePort(ice::IceRole::CONTROLLED, 256 * 1024, _channel.getEndpointIdHash());
         _transport->setDataReceiver(this);
 
-        auto bundle = offer["bundle-transport"];
-        ice::IceCandidates candidates;
+        _channel.configureTransport(*_transport, _audioAllocator);
 
-        for (auto& c : bundle["ice"]["candidates"])
-        {
-            candidates.push_back(ice::IceCandidate(c["foundation"].template get<std::string>().c_str(),
-                ice::IceComponent::RTP,
-                c["protocol"] == "udp" ? ice::TransportType::UDP : ice::TransportType::TCP,
-                c["priority"].template get<uint32_t>(),
-                transport::SocketAddress::parse(c["ip"], c["port"]),
-                ice::IceCandidate::Type::HOST));
-        }
-
-        std::pair<std::string, std::string> credentials;
-        credentials.first = bundle["ice"]["ufrag"];
-        credentials.second = bundle["ice"]["pwd"];
-
-        _transport->setRemoteIce(credentials, candidates, _audioAllocator);
-
-        std::string fingerPrint = bundle["dtls"]["hash"];
-        _transport->setRemoteDtlsFingerprint(bundle["dtls"]["type"], fingerPrint, true);
-
-        if (offer.find("audio") != offer.end())
+        if (_channel.isAudioOffered())
         {
             _audioSource = std::make_unique<emulator::AudioSource>(_allocator, _idGenerator.next());
             _transport->setAudioPayloadType(111, codec::Opus::sampleRate);
         }
 
-        if (offer.find("video") != offer.end())
-        {
-            for (uint32_t ssrc : offer["video"]["ssrcs"])
-            {
-                _remoteVideoSsrc.emplace(ssrc);
-            }
-        }
+        _remoteVideoSsrc = _channel.getOfferedVideoSsrcs();
     }
 
     void connect()
@@ -916,11 +948,7 @@ public:
             bridge::RtpMap rtpMap(bridge::RtpMap::Format::OPUS);
             rtpMap._audioLevelExtId.set(1);
             _receivedData.emplace(rtpHeader->ssrc.get(),
-                new RtpReceiver(_loggableId.getInstanceId(),
-                    rtpHeader->ssrc.get(),
-                    rtpMap,
-                    sender,
-                    timestamp));
+                new RtpReceiver(_loggableId.getInstanceId(), rtpHeader->ssrc.get(), rtpMap, sender, timestamp));
             it = _receivedData.find(rtpHeader->ssrc.get());
         }
 
@@ -1086,32 +1114,17 @@ TEST_F(IntegrationTest, plain)
         *_transportFactory,
         *_sslDtls);
 
+    GroupCall<SfuClient<ColibriChannel>> groupCall({&client1, &client2, &client3});
+
     client1.initiateCall(baseUrl, conf.getId(), true, true, true, true);
     client2.initiateCall(baseUrl, conf.getId(), false, true, true, true);
     client3.initiateCall(baseUrl, conf.getId(), false, true, true, false);
 
-    EXPECT_TRUE(client1._channel.isSuccess());
-    EXPECT_TRUE(client2._channel.isSuccess());
-    EXPECT_TRUE(client3._channel.isSuccess());
-
-    if (!client1._channel.isSuccess() && client2._channel.isSuccess() && client3._channel.isSuccess())
+    auto connectResult = groupCall.connect(utils::Time::sec * 5);
+    ASSERT_TRUE(connectResult);
+    if (!connectResult)
     {
         return;
-    }
-
-    client1.processLegacyOffer();
-    client2.processLegacyOffer();
-    client3.processLegacyOffer();
-
-    client1.connect();
-    client2.connect();
-    client3.connect();
-
-    while (
-        !client1._transport->isConnected() || !client2._transport->isConnected() || !client3._transport->isConnected())
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-        logger::debug("waiting for connect...", "test");
     }
 
     client1._audioSource->setFrequency(600);
@@ -1122,16 +1135,8 @@ TEST_F(IntegrationTest, plain)
     client2._audioSource->setVolume(0.6);
     client3._audioSource->setVolume(0.6);
 
-    utils::Pacer pacer(10 * utils::Time::ms);
-    for (int i = 0; i < 500; ++i)
-    {
-        const auto timestamp = utils::Time::getAbsoluteTime();
-        client1.process(timestamp);
-        client2.process(timestamp);
-        client3.process(timestamp);
-        pacer.tick(utils::Time::getAbsoluteTime());
-        utils::Time::nanoSleep(pacer.timeToNextTick(utils::Time::getAbsoluteTime()));
-    }
+    groupCall.run(utils::Time::sec * 5);
+
     client3._transport->stop();
 
     client3.stopRecording();
@@ -1148,13 +1153,7 @@ TEST_F(IntegrationTest, plain)
     client1._transport->stop();
     client2._transport->stop();
 
-    for (int i = 0; i < 10 &&
-         (client1._transport->hasPendingJobs() || client2._transport->hasPendingJobs() ||
-             client3._transport->hasPendingJobs());
-         ++i)
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-    }
+    groupCall.awaitPendingJobs(utils::Time::sec * 4);
 
     const auto audioPacketSampleCount = codec::Opus::sampleRate / codec::Opus::packetsPerSecond;
     {
@@ -1275,10 +1274,6 @@ TEST_F(IntegrationTest, plain)
     }
 }
 
-class Foo
-{
-};
-
 TEST_F(IntegrationTest, plainNewApi)
 {
     if (__has_feature(address_sanitizer) || __has_feature(thread_sanitizer))
@@ -1304,32 +1299,16 @@ TEST_F(IntegrationTest, plainNewApi)
     SfuClient<Channel> client2(++_instanceCounter, *_mainPoolAllocator, _audioAllocator, *_transportFactory, *_sslDtls);
     SfuClient<Channel> client3(++_instanceCounter, *_mainPoolAllocator, _audioAllocator, *_transportFactory, *_sslDtls);
 
+    GroupCall<SfuClient<Channel>> groupCall({&client1, &client2, &client3});
+
     client1.initiateCall(baseUrl, conf.getId(), true, true, true, true);
     client2.initiateCall(baseUrl, conf.getId(), false, true, true, true);
     client3.initiateCall(baseUrl, conf.getId(), false, true, true, false);
 
-    EXPECT_TRUE(client1._channel.isSuccess());
-    EXPECT_TRUE(client2._channel.isSuccess());
-    EXPECT_TRUE(client3._channel.isSuccess());
-
-    if (!client1._channel.isSuccess() && client2._channel.isSuccess() && client3._channel.isSuccess())
+    if (!groupCall.connect(utils::Time::sec * 8))
     {
+        EXPECT_TRUE(false);
         return;
-    }
-
-    client1.processOffer();
-    client2.processOffer();
-    client3.processOffer();
-
-    client1.connect();
-    client2.connect();
-    client3.connect();
-
-    while (
-        !client1._transport->isConnected() || !client2._transport->isConnected() || !client3._transport->isConnected())
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-        logger::debug("waiting for connect...", "test");
     }
 
     client1._audioSource->setFrequency(600);
@@ -1340,16 +1319,8 @@ TEST_F(IntegrationTest, plainNewApi)
     client2._audioSource->setVolume(0.6);
     client3._audioSource->setVolume(0.6);
 
-    utils::Pacer pacer(10 * utils::Time::ms);
-    for (int i = 0; i < 500; ++i)
-    {
-        const auto timestamp = utils::Time::getAbsoluteTime();
-        client1.process(timestamp);
-        client2.process(timestamp);
-        client3.process(timestamp);
-        pacer.tick(utils::Time::getAbsoluteTime());
-        utils::Time::nanoSleep(pacer.timeToNextTick(utils::Time::getAbsoluteTime()));
-    }
+    groupCall.run(utils::Time::ms * 5000);
+
     client3._transport->stop();
 
     client3.stopRecording();
@@ -1366,13 +1337,7 @@ TEST_F(IntegrationTest, plainNewApi)
     client1._transport->stop();
     client2._transport->stop();
 
-    for (int i = 0; i < 10 &&
-         (client1._transport->hasPendingJobs() || client2._transport->hasPendingJobs() ||
-             client3._transport->hasPendingJobs());
-         ++i)
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-    }
+    groupCall.awaitPendingJobs(utils::Time::sec * 4);
 
     const auto audioPacketSampleCount = codec::Opus::sampleRate / codec::Opus::packetsPerSecond;
     {
@@ -1526,32 +1491,16 @@ TEST_F(IntegrationTest, ptime10)
     SfuClient<Channel> client2(++_instanceCounter, *_mainPoolAllocator, _audioAllocator, *_transportFactory, *_sslDtls);
     SfuClient<Channel> client3(++_instanceCounter, *_mainPoolAllocator, _audioAllocator, *_transportFactory, *_sslDtls);
 
+    GroupCall<SfuClient<Channel>> groupCall({&client1, &client2, &client3});
+
     client1.initiateCall(baseUrl, conf.getId(), true, true, true, true);
     client2.initiateCall(baseUrl, conf.getId(), false, true, true, true);
     client3.initiateCall(baseUrl, conf.getId(), false, true, true, false);
 
-    EXPECT_TRUE(client1._channel.isSuccess());
-    EXPECT_TRUE(client2._channel.isSuccess());
-    EXPECT_TRUE(client3._channel.isSuccess());
-
-    if (!client1._channel.isSuccess() && client2._channel.isSuccess() && client3._channel.isSuccess())
+    if (!groupCall.connect(utils::Time::sec * 4))
     {
+        EXPECT_TRUE(false);
         return;
-    }
-
-    client1.processOffer();
-    client2.processOffer();
-    client3.processOffer();
-
-    client1.connect();
-    client2.connect();
-    client3.connect();
-
-    while (
-        !client1._transport->isConnected() || !client2._transport->isConnected() || !client3._transport->isConnected())
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-        logger::debug("waiting for connect...", "test");
     }
 
     client1._audioSource->setFrequency(600);
@@ -1562,16 +1511,8 @@ TEST_F(IntegrationTest, ptime10)
     client2._audioSource->setVolume(0.6);
     client3._audioSource->setVolume(0.6);
 
-    utils::Pacer pacer(10 * utils::Time::ms);
-    for (int i = 0; i < 500; ++i)
-    {
-        const auto timestamp = utils::Time::getAbsoluteTime();
-        client1.process(timestamp);
-        client2.process(timestamp);
-        client3.process(timestamp);
-        pacer.tick(utils::Time::getAbsoluteTime());
-        utils::Time::nanoSleep(pacer.timeToNextTick(utils::Time::getAbsoluteTime()));
-    }
+    groupCall.run(utils::Time::sec * 5);
+
     client3._transport->stop();
 
     client3.stopRecording();
@@ -1588,13 +1529,7 @@ TEST_F(IntegrationTest, ptime10)
     client1._transport->stop();
     client2._transport->stop();
 
-    for (int i = 0; i < 10 &&
-         (client1._transport->hasPendingJobs() || client2._transport->hasPendingJobs() ||
-             client3._transport->hasPendingJobs());
-         ++i)
-    {
-        utils::Time::nanoSleep(1 * utils::Time::sec);
-    }
+    groupCall.awaitPendingJobs(utils::Time::sec * 4);
 
     const auto audioPacketSampleCount = codec::Opus::sampleRate / codec::Opus::packetsPerSecond;
     {
